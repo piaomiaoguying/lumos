@@ -105,7 +105,7 @@ class TrafficLightController:
         mapping = {
             "off":           ("all",    "off"),
             "working":       ("green",  "blink"),
-            "standby":       ("green",  "on"),
+            "standby":       ("blue",   "on"),
             "waiting_user":  ("yellow", "on"),
             "need_user":     ("yellow", "blink"),
             "error":         ("red",    "blink"),

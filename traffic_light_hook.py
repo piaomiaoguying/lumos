@@ -51,7 +51,7 @@ TTL: dict[str, float] = {
 STATE_MAP: dict[str, tuple[str, str]] = {
     "off":           ("all",    "off"),
     "working":       ("green",  "blink"),
-    "standby":       ("green",  "on"),
+    "standby":       ("blue",   "on"),
     "waiting_user":  ("yellow", "on"),
     "need_user":     ("yellow", "blink"),
     "error":         ("red",    "blink"),
