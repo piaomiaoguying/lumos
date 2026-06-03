@@ -210,6 +210,11 @@ def _start_blinker(color: str):
 def _apply_light(status: str):
     """根据聚合后的状态控制灯。
 
+    每次切换状态时：
+      1. 先杀掉旧 blinker 进程
+      2. 关闭所有灯（避免上一状态的颜色残留）
+      3. 再设置新状态
+
     - "off" 模式 → 直接发串口命令
     - "blink" 模式 → 启动软件呼吸灯进程（常驻）
     """
@@ -221,14 +226,15 @@ def _apply_light(status: str):
     if not ctrl.available:
         return
 
+    # 先清理旧状态：杀 blinker + 全关，避免颜色残留
+    _kill_blinker()
+    ctrl.all_off()
+    time.sleep(0.15)
+
     if mode == "blink":
         _start_blinker(color)
-    else:
-        _kill_blinker()
-        if color == "all":
-            ctrl.all_off()
-        else:
-            ctrl.set_light(color, mode)
+    elif color != "all":
+        ctrl.set_light(color, mode)
 
 
 # ── 主入口 ────────────────────────────────────────────
