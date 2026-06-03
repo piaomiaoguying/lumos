@@ -16,7 +16,7 @@ TARGET_FILE = STATE_DIR / "blink_target"
 PID_FILE = STATE_DIR / "blinker.pid"
 
 # 呼吸节奏
-ON_SEC = 1.5
+ON_SEC = 1
 OFF_SEC = 0.5
 
 
