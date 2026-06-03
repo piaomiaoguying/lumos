@@ -12,10 +12,10 @@
   1. flock 全局锁（防多实例同时写串口）
   2. 扫描 ~/.claude/state/traffic-light/instances/ → 清理过期文件
   3. 写入/更新本实例状态文件
-  4. 取所有有效实例中 priority 最小的 → 最终状态
+  4. 取最后更新的实例状态（后触发者胜）
   5. 状态有变化 → 控制灯
      - 常亮/常灭 → 直接发串口命令，杀掉 blinker 进程
-     - 闪烁 → 启动软件 blinker（亮2秒灭1秒），常驻直到状态切换
+     - 闪烁 → 启动软件 blinker（亮1.5s灭0.5s），常驻直到状态切换
   6. 释放锁，退出
 """
 
@@ -144,8 +144,15 @@ def _write_current_state(state: dict):
 
 
 def _aggregate(now: float) -> tuple[str, int]:
+    """扫描所有实例文件，返回 最后更新 的实例状态。
+
+    后触发者胜——不按优先级聚合，谁最后写文件就听谁的。
+    无有效实例时返回 ("off", sys.maxsize)。
+    """
     best_status = "off"
     best_priority = sys.maxsize
+    best_updated = 0.0
+
     try:
         for path in INSTANCES_DIR.iterdir():
             if not path.suffix == ".json":
@@ -154,10 +161,11 @@ def _aggregate(now: float) -> tuple[str, int]:
                 data = json.loads(path.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
                 continue
-            prio = data.get("priority", sys.maxsize)
-            if prio < best_priority:
-                best_priority = prio
+            updated = data.get("updated_at", 0)
+            if updated > best_updated:
+                best_updated = updated
                 best_status = data.get("status", "off")
+                best_priority = data.get("priority", sys.maxsize)
     except FileNotFoundError:
         pass
     return best_status, best_priority
@@ -174,7 +182,6 @@ def _kill_blinker():
             os.kill(old_pid, signal.SIGTERM)
         except ProcessLookupError:
             pass
-    # 此外杀掉所有名字匹配的进程（防止僵尸）
     try:
         subprocess.run(
             ["pkill", "-f", "traffic_light_blinker.py"],
@@ -197,7 +204,6 @@ def _start_blinker(color: str):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    # 给一点时间启动
     time.sleep(0.2)
 
 
@@ -273,10 +279,10 @@ def main():
         else:
             _write_instance(session_id, status, priority, project)
 
-        # 3) 聚合
+        # 3) 聚合（后触发者胜）
         best_status, best_priority = _aggregate(now)
 
-        # 4) Debounce
+        # 4) Debounce: 本实例刚切到 standby，但之前是 working → 保持 working
         if best_status == "standby":
             prev = _read_current_state()
             if prev and prev.get("status") == "working":
