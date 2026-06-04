@@ -3,10 +3,13 @@ set -e
 # =============================================
 # 交通灯 Hook 开关脚本
 # 用法:
-#   ./toggle_traffic_light.sh        # 自动检测设备
-#   ./toggle_traffic_light.sh on     # 强制启用
-#   ./toggle_traffic_light.sh off    # 强制禁用
-#   ./toggle_traffic_light.sh status # 查看状态
+#   ./toggle_traffic_light.sh            # 自动检测设备
+#   ./toggle_traffic_light.sh on         # 强制启用
+#   ./toggle_traffic_light.sh off        # 强制禁用
+#   ./toggle_traffic_light.sh status     # 查看状态
+#   ./toggle_traffic_light.sh log-on     # 启用日志
+#   ./toggle_traffic_light.sh log-off    # 禁用日志
+#   ./toggle_traffic_light.sh log-status # 查看日志状态
 #
 # 说明:
 #   SessionStart 事件会自动检测设备并刷新哨兵文件，
@@ -14,6 +17,7 @@ set -e
 # =============================================
 
 SENTINEL="$HOME/.claude/state/traffic-light/disabled"
+NO_LOG="$HOME/.claude/state/traffic-light/no-log"
 
 enable_hook() {
     if [ -f "$SENTINEL" ]; then
@@ -38,6 +42,42 @@ device_exists() {
     ls /dev/tty.usbserial-* >/dev/null 2>&1
 }
 
+enable_log() {
+    if [ -f "$NO_LOG" ]; then
+        rm "$NO_LOG"
+        echo "📋 已启用日志 (hook.log)"
+    else
+        echo "ℹ️  日志已经是启用状态"
+    fi
+}
+
+disable_log() {
+    if [ ! -f "$NO_LOG" ]; then
+        mkdir -p "$(dirname "$NO_LOG")"
+        touch "$NO_LOG"
+        echo "📋 已禁用日志"
+    else
+        echo "ℹ️  日志已经是禁用状态"
+    fi
+}
+
+log_status() {
+    if [ -f "$NO_LOG" ]; then
+        echo "日志: 📴 已禁用 (no-log 哨兵文件存在)"
+        echo "      运行 $0 log-on 启用日志"
+    else
+        echo "日志: 📝 已启用 (写入 hook.log)"
+        local log_file="$HOME/.claude/state/traffic-light/hook.log"
+        if [ -f "$log_file" ]; then
+            echo "      最近 5 条:"
+            tail -5 "$log_file"
+        else
+            echo "      (暂无日志记录)"
+        fi
+        echo "      运行 $0 log-off 禁用日志"
+    fi
+}
+
 CMD="${1:-auto}"
 
 case "$CMD" in
@@ -54,6 +94,18 @@ case "$CMD" in
         else
             echo "状态: 🟢 已启用 (hook 正常执行)"
         fi
+        echo ""
+        # 同时显示日志状态
+        log_status
+        ;;
+    log-on)
+        enable_log
+        ;;
+    log-off)
+        disable_log
+        ;;
+    log-status)
+        log_status
         ;;
     auto|*)
         if device_exists; then

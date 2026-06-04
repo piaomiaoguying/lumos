@@ -68,6 +68,29 @@ PROJECT_DIR = Path(__file__).resolve().parent
 BLINKER_SCRIPT = PROJECT_DIR / "traffic_light_blinker.py"
 VENV_PYTHON = PROJECT_DIR / ".venv/bin/python"
 
+# 日志配置
+LOG_FILE = STATE_DIR / "hook.log"
+NO_LOG_FILE = STATE_DIR / "no-log"
+MAX_LOG_SIZE = 100 * 1024  # 100KB
+
+
+def _log(session_id: str, event: str, status: str, result: str):
+    """追加一行日志，超限时自动截断。失败不影响主逻辑。"""
+    if NO_LOG_FILE.exists():
+        return
+    try:
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        short_id = session_id[:8]
+        line = f"{now} {short_id} {event} {status} {result}\n"
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(line)
+        if LOG_FILE.stat().st_size > MAX_LOG_SIZE:
+            lines = LOG_FILE.read_text(encoding="utf-8").splitlines()
+            LOG_FILE.write_text("\n".join(lines[-500:]) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
 _controller: object | None = None
 
 
@@ -251,19 +274,23 @@ def main():
     status = sys.argv[2]
     priority = int(sys.argv[3])
 
+    # 提前获取 session_id，日志和 disabled 路径也需要
+    session_id = _get_session_id()
+
     # SessionStart 时自动检测设备，刷新哨兵文件
     if event == "SessionStart":
         if glob.glob("/dev/tty.usbserial-*"):
             DISABLED_FILE.unlink(missing_ok=True)
+            _log(session_id, event, status, "auto-detect:enabled")
         else:
             DISABLED_FILE.parent.mkdir(parents=True, exist_ok=True)
             DISABLED_FILE.touch()
+            _log(session_id, event, status, "auto-detect:no_device,disabled")
 
     # 哨兵文件存在 → 已禁用，直接退出
     if DISABLED_FILE.exists():
+        _log(session_id, event, status, "disabled")
         sys.exit(0)
-
-    session_id = _get_session_id()
     project = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
 
     _ensure_dirs()
@@ -309,18 +336,24 @@ def main():
             if prev and prev.get("status") == "working":
                 working_since = prev.get("working_since", 0)
                 if now - working_since < DEBOUNCE_WORKING:
+                    _log(session_id, event, status, "debounce:kept_working")
                     best_status = "working"
                     best_priority = 4
 
         # 5) 状态没变 → 跳过
         prev = _read_current_state()
         if prev and prev.get("status") == best_status:
+            _log(session_id, event, status, "same")
             raise SystemExit(0)
 
         # 6) 控制灯
         _apply_light(best_status)
 
-        # 7) 记录状态
+        # 7) 记录状态 + 日志
+        prev_status = prev.get("status", "off") if prev else "off"
+        color, mode = STATE_MAP.get(best_status, ("?", "?"))
+        _log(session_id, event, status, f"{prev_status}→{best_status}:{color}_{mode}")
+
         state_record = {
             "status": best_status,
             "priority": best_priority,
