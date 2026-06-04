@@ -9,6 +9,7 @@
 
 架构：纯 hook 驱动，无守护进程。
 每次 hook 触发时：
+  0. SessionStart 时自动检测设备，刷新哨兵文件；其他事件读哨兵文件快速退出
   1. flock 全局锁（防多实例同时写串口）
   2. 扫描 ~/.claude/state/traffic-light/instances/ → 清理过期文件
   3. 写入/更新本实例状态文件
@@ -20,6 +21,7 @@
 """
 
 import fcntl
+import glob
 import json
 import os
 import signal
@@ -36,6 +38,7 @@ LOCK_FILE = STATE_DIR / "lock"
 CURRENT_STATE_FILE = STATE_DIR / "current_state"
 BLINK_TARGET = STATE_DIR / "blink_target"
 PID_FILE = STATE_DIR / "blinker.pid"
+DISABLED_FILE = STATE_DIR / "disabled"
 
 # 分状态 TTL（秒）
 TTL: dict[str, float] = {
@@ -247,6 +250,18 @@ def main():
     event = sys.argv[1]
     status = sys.argv[2]
     priority = int(sys.argv[3])
+
+    # SessionStart 时自动检测设备，刷新哨兵文件
+    if event == "SessionStart":
+        if glob.glob("/dev/tty.usbserial-*"):
+            DISABLED_FILE.unlink(missing_ok=True)
+        else:
+            DISABLED_FILE.parent.mkdir(parents=True, exist_ok=True)
+            DISABLED_FILE.touch()
+
+    # 哨兵文件存在 → 已禁用，直接退出
+    if DISABLED_FILE.exists():
+        sys.exit(0)
 
     session_id = _get_session_id()
     project = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
