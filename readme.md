@@ -56,7 +56,6 @@ ln -sf "$(pwd)/traffic_light_hook.py" ~/.claude/scripts/traffic-light-hook
 "hooks": {
   "SessionStart": [{"hooks": [{"type": "command", "command": ".venv/bin/python ~/.claude/scripts/traffic-light-hook SessionStart standby 5", "async": true}]}],
   "UserPromptSubmit": [{"hooks": [{"type": "command", "command": ".venv/bin/python ~/.claude/scripts/traffic-light-hook UserPromptSubmit working 4", "async": true}]}],
-  "PreToolUse": [{"hooks": [{"type": "command", "command": ".venv/bin/python ~/.claude/scripts/traffic-light-hook PreToolUse working 4", "async": true}]}],
   "Stop": [{"hooks": [{"type": "command", "command": ".venv/bin/python ~/.claude/scripts/traffic-light-hook Stop standby 5", "async": true}]}],
   "PermissionRequest": [{"hooks": [{"type": "command", "command": ".venv/bin/python ~/.claude/scripts/traffic-light-hook PermissionRequest need_user 2", "async": true}]}],
   "Notification": [
@@ -103,9 +102,9 @@ bash light_menu.sh        # 交互菜单
 Hook 每次触发都会记录决策日志到 `~/.claude/state/traffic-light/hook.log`，格式：
 
 ```
-2026-06-04 11:29:04 5542b39a PostToolUse working same
-2026-06-04 11:29:04 5542b39a AgentStop standby working→standby:blue_on
-2026-06-04 11:29:09 5542b39a PreToolUse working disabled
+2026-06-04 11:29:04 5542b39a UserPromptSubmit working standby→working:green_blink
+2026-06-04 11:29:04 5542b39a Stop working working→standby:blue_on
+2026-06-04 11:29:09 5542b39a PermissionRequest need_user standby→need_user:yellow_blink
 ```
 
 字段：`时间` | `session_id[:8]` | `事件` | `传入状态` | `决策结果`
