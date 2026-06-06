@@ -37,7 +37,6 @@ HOOK_DEFS = [
     ("PermissionRequest",None,               "need_user",   2),
     ("Notification",     "permission_prompt", "need_user",  2),
     ("PermissionDenied", None,               "standby",     3),
-    ("Notification",     "idle_prompt",       "standby",     3),
     ("Elicitation",      None,               "waiting_user", 3),
     ("StopFailure",      None,               "error",       1),
     ("SessionEnd",       None,               "off",         999),

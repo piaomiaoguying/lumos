@@ -11,7 +11,7 @@ USB 串口报警灯通过 Claude Code hook 实时呈现运行状态，无需看�
 | 灯 | 含义 | Claude Code 在做什么 | 触发条件 |
 |----|------|---------------------|----------|
 | 🟢 绿灯慢闪（亮1s 灭0.5s） | **working** | 正在执行工具 / 刚收到你的输入 | `UserPromptSubmit`、`PreToolUse`（用户批准权限后开始执行） |
-| 🔵 蓝灯常亮 | **standby** | 输出完了 / 空闲等待，不用管 | `Stop`、`Notification(idle_prompt)`、`PermissionDenied`（仅自动模式） |
+| 🔵 蓝灯常亮 | **standby** | 输出完了 / 空闲等待，不用管 | `Stop`、`PermissionDenied`（仅自动模式） |
 | 🟡 黄灯常亮 | **waiting_user** | 主动问你问题，需要你回答 | `Elicitation` |
 | 🟡 黄灯慢闪（亮1s 灭0.5s） | **need_user** | 弹出确认框，等你批准 | `PermissionRequest` / `Notification(permission_prompt)` |
 | 🔴 红灯慢闪（亮1s 灭0.5s） | **error** | API 报错（限流/认证失败等） | `StopFailure` |
@@ -21,7 +21,7 @@ USB 串口报警灯通过 Claude Code hook 实时呈现运行状态，无需看�
 
 ## 状态转换
 
-```
+```text
 UserPromptSubmit ──────────→ 🟢 working (绿灯闪烁)
        │
        ├── PreToolUse ──────→ 🟢 working (绿灯闪烁，用户批准后继续执行)
@@ -30,12 +30,10 @@ UserPromptSubmit ──────────→ 🟢 working (绿灯闪烁)
        │   └──────────────────→ 🟡 need_user (黄灯闪烁，等待批准)
        │       │
        │       ├── 用户点 Yes → PreToolUse → 🟢 working
-       │       └── 用户点 No  → (无 hook 事件，等待 idle_prompt 延迟触发)
-       │                         └── Notification(idle_prompt) → 🔵 standby (蓝灯常亮)
+       │       └── 用户点 No  → (无 hook 事件，灯保持 need_user 直到实例退出或被新事件覆盖)
        │
        ├── Stop ────────────→ 🔵 standby (蓝灯常亮)
        │
-       ├── Notification(idle_prompt) → 🔵 standby (蓝灯常亮)
        ├── Elicitation ─────→ 🟡 waiting_user (黄灯常亮)
        ├── PermissionDenied（仅自动模式）→ 🔵 standby (蓝灯常亮)
        ├── StopFailure ─────→ 🔴 error (红灯闪烁)
