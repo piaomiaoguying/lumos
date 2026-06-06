@@ -45,9 +45,10 @@ TTL: dict[str, float] = {
     "working": 15,
     "standby": 120,
     "waiting_user": 300,
-    "need_user": 300,
-    "error": 300,
 }
+
+# 闪烁状态——需要人工介入，不能被其他实例的低优先级状态覆盖
+BLINK_STATES: set[str] = {"need_user", "error"}
 
 # 状态 → (颜色, 模式)
 # 模式 "on"/"off" 直接发串口，"blink" 启动软件呼吸灯
@@ -134,7 +135,7 @@ def _cleanup_expired(now: float):
                 continue
             max_age = TTL.get(data.get("status", ""))
             if max_age is None:
-                max_age = 120
+                continue          # 不在 TTL 表里的状态不清理（need_user / error）
             if now - data.get("updated_at", 0) > max_age:
                 path.unlink(missing_ok=True)
     except FileNotFoundError:
@@ -169,14 +170,15 @@ def _write_current_state(state: dict):
     CURRENT_STATE_FILE.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
 
-def _aggregate(now: float) -> tuple[str, int]:
+def _aggregate(now: float) -> tuple[str, int, str]:
     """扫描所有实例文件，返回 最后更新 的实例状态。
 
     后触发者胜——不按优先级聚合，谁最后写文件就听谁的。
-    无有效实例时返回 ("off", sys.maxsize)。
+    无有效实例时返回 ("off", sys.maxsize, "")。
     """
     best_status = "off"
     best_priority = sys.maxsize
+    best_session_id = ""
     best_updated = 0.0
 
     try:
@@ -192,9 +194,10 @@ def _aggregate(now: float) -> tuple[str, int]:
                 best_updated = updated
                 best_status = data.get("status", "off")
                 best_priority = data.get("priority", sys.maxsize)
+                best_session_id = data.get("session_id", "")
     except FileNotFoundError:
         pass
-    return best_status, best_priority
+    return best_status, best_priority, best_session_id
 
 
 def _kill_blinker():
@@ -333,7 +336,25 @@ def main():
             _log(session_id, event, status, "auto-detect:enabled")
 
         # 2) 聚合（后触发者胜）
-        best_status, best_priority = _aggregate(now)
+        best_status, best_priority, aggregated_session_id = _aggregate(now)
+
+        # 2.5) 闪烁锁：闪烁状态一旦确立，只能被同一实例、更高优先级闪烁、或已死实例覆盖
+        prev = _read_current_state()
+        if prev and prev.get("status") in BLINK_STATES:
+            owner_id = prev.get("owner_session_id", "")
+            owner_file = INSTANCES_DIR / f"{owner_id}.json"
+            if owner_file.exists():
+                # 锁主还活着 → 只有同一实例或更高优先级闪烁才能覆盖
+                if aggregated_session_id == owner_id:
+                    pass  # 放行：同一实例
+                elif aggregated_session_id != "" and best_status in BLINK_STATES and best_priority < prev.get("priority", sys.maxsize):
+                    pass  # 放行：更高优先级闪烁升级（error 覆盖 need_user）
+                else:
+                    _log(session_id, event, status, f"blink-lock:rejected_{best_status}")
+                    best_status = prev["status"]
+                    best_priority = prev["priority"]
+                    aggregated_session_id = owner_id  # 保持原所有者不变
+            # else: 锁主已死（SessionEnd 删了文件）→ 放行
 
         # 3) Debounce: 本实例刚切到 standby，但之前是 working → 保持 working
         if best_status == "standby":
@@ -364,6 +385,8 @@ def main():
             "priority": best_priority,
             "updated_at": now,
         }
+        if best_status in BLINK_STATES:
+            state_record["owner_session_id"] = aggregated_session_id
         if best_status == "working":
             state_record["working_since"] = prev.get("working_since", now) if prev else now
         _write_current_state(state_record)
