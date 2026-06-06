@@ -68,12 +68,9 @@ def build_hook_group(event: str, matcher: str | None, status: str, priority: int
     return group
 
 
-def is_traffic_light_group(group: dict) -> bool:
-    """判断一个 hook group 是否属于 traffic-light。"""
-    for hook in group.get("hooks", []):
-        if "traffic-light-hook" in hook.get("command", ""):
-            return True
-    return False
+def is_traffic_light_hook(hook: dict) -> bool:
+    """判断单个 hook 是否属于 traffic-light。"""
+    return "traffic-light-hook" in hook.get("command", "")
 
 
 def merge_settings(settings: dict) -> dict:
@@ -82,8 +79,9 @@ def merge_settings(settings: dict) -> dict:
     合并策略：
       对每个 traffic-light 管理的事件：
         1. 确保该事件的数组存在
-        2. 删除数组中所有包含 traffic-light-hook 的 group（旧路径）
-        3. 追加新的 traffic-light group
+        2. 从已有 group 中移除 traffic-light hook（但不删整个 group）
+        3. 如果某个 group 的所有 hook 都被移除，删除该 group
+        4. 追加新的 traffic-light group（独立 group，不混入别人的 group）
       对不管理的事件：完全不动
       对 hooks 以外的字段（env、permissions 等）：完全不动
     """
@@ -93,14 +91,21 @@ def merge_settings(settings: dict) -> dict:
     for event, matcher, status, priority in HOOK_DEFS:
         existing_groups = settings["hooks"].get(event, [])
 
-        # 过滤掉所有旧的 traffic-light group，保留其他 group
-        kept_groups = [g for g in existing_groups if not is_traffic_light_group(g)]
+        # 从已有的每个 group 中移除 traffic-light hook（细粒度操作）
+        cleaned_groups = []
+        for group in existing_groups:
+            non_traffic = [h for h in group.get("hooks", []) if not is_traffic_light_hook(h)]
+            if non_traffic:
+                new_group = dict(group)
+                new_group["hooks"] = non_traffic
+                cleaned_groups.append(new_group)
+            # 如果 non_traffic 为空，整个 group 就没有了，不保留
 
-        # 追加新的 traffic-light group
+        # 追加新的 traffic-light group（独立 group，不混入别人的 hooks 数组）
         new_group = build_hook_group(event, matcher, status, priority)
-        kept_groups.append(new_group)
+        cleaned_groups.append(new_group)
 
-        settings["hooks"][event] = kept_groups
+        settings["hooks"][event] = cleaned_groups
 
     return settings
 
