@@ -26,7 +26,7 @@ VENV_PYTHON = PROJECT_DIR / ".venv/bin/python"
 HOOK_SCRIPT = Path.home() / ".claude/scripts/traffic-light-hook"
 SETTINGS_FILE = Path.home() / ".claude/settings.json"
 
-# 定义 traffic-light 的 8 类 hook 事件，每个事件一个独立 group
+# 定义 traffic-light 的 hook 事件，每个事件一个独立 group
 # 注意：每个事件的 group 只包含 traffic-light hook 本身
 HOOK_DEFS = [
     # (事件名, matcher, 状态, 优先级)
@@ -36,8 +36,8 @@ HOOK_DEFS = [
     ("Stop",             None,               "standby",     5),
     ("PermissionRequest",None,               "need_user",   2),
     ("Notification",     "permission_prompt", "need_user",  2),
-    ("PermissionDenied", None,               "waiting_user", 3),
-    ("Notification",     "idle_prompt",       "waiting_user", 3),
+    ("PermissionDenied", None,               "standby",     3),
+    ("Notification",     "idle_prompt",       "standby",     3),
     ("Elicitation",      None,               "waiting_user", 3),
     ("StopFailure",      None,               "error",       1),
     ("SessionEnd",       None,               "off",         999),

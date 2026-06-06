@@ -16,7 +16,7 @@
   4. 取最后更新的实例状态（后触发者胜）
   5. 状态有变化 → 控制灯
      - 常亮/常灭 → 直接发串口命令，杀掉 blinker 进程
-     - 闪烁 → 启动软件 blinker（亮1.5s灭0.5s），常驻直到状态切换
+     - 闪烁 → 启动软件 blinker（亮1s灭0.5s），常驻直到状态切换
   6. 释放锁，退出
 """
 
@@ -170,7 +170,7 @@ def _write_current_state(state: dict):
     CURRENT_STATE_FILE.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
 
-def _aggregate(now: float) -> tuple[str, int, str]:
+def _aggregate() -> tuple[str, int, str]:
     """扫描所有实例文件，返回 最后更新 的实例状态。
 
     后触发者胜——不按优先级聚合，谁最后写文件就听谁的。
@@ -336,7 +336,7 @@ def main():
             _log(session_id, event, status, "auto-detect:enabled")
 
         # 2) 聚合（后触发者胜）
-        best_status, best_priority, aggregated_session_id = _aggregate(now)
+        best_status, best_priority, aggregated_session_id = _aggregate()
 
         # 2.5) 闪烁锁：闪烁状态一旦确立，只能被同一实例、更高优先级闪烁、或已死实例覆盖
         prev = _read_current_state()
