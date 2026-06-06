@@ -8,14 +8,14 @@ USB 串口报警灯通过 Claude Code hook 实时呈现运行状态，无需看�
 
 ## 灯 → 含义
 
-| 灯 | 含义 | Claude Code 在做什么 |
-|----|------|---------------------|
-| 🟢 绿灯慢闪（亮1s 灭0.5s） | **working** | 正在执行工具 / 刚收到你的输入 |
-| 🔵 蓝灯常亮 | **standby** | 输出完了，不用管 |
-| 🟡 黄灯常亮 | **waiting_user** | 等你输入/回答问题 |
-| 🟡 黄灯慢闪（亮1s 灭0.5s） | **need_user** | 弹出确认框，等你批准 |
-| 🔴 红灯慢闪（亮1s 灭0.5s） | **error** | API 报错（限流/认证失败等） |
-| ⚫ 全灭 | **off** | 无活跃会话 |
+| 灯 | 含义 | Claude Code 在做什么 | 触发条件 |
+|----|------|---------------------|----------|
+| 🟢 绿灯慢闪（亮1s 灭0.5s） | **working** | 正在执行工具 / 刚收到你的输入 | `UserPromptSubmit` |
+| 🔵 蓝灯常亮 | **standby** | 输出完了，不用管 | `Stop`（AI 输出结束） |
+| 🟡 黄灯常亮 | **waiting_user** | 等你输入/回答问题 | Claude Code 内置 `idle_prompt`，约 60s 无输入后触发 |
+| 🟡 黄灯慢闪（亮1s 灭0.5s） | **need_user** | 弹出确认框，等你批准 | `PermissionRequest` / `Notification(permission_prompt)` |
+| 🔴 红灯慢闪（亮1s 灭0.5s） | **error** | API 报错（限流/认证失败等） | `StopFailure` |
+| ⚫ 全灭 | **off** | 无活跃会话 | `SessionEnd`（最后一个实例退出） |
 
 ## 文件
 
@@ -24,48 +24,29 @@ USB 串口报警灯通过 Claude Code hook 实时呈现运行状态，无需看�
 ├── traffic_light_controller.py   # 串口控制库（线程安全）
 ├── traffic_light_hook.py         # Hook 入口 + 多实例聚合引擎
 ├── traffic_light_blinker.py      # 软件呼吸灯（慢闪烁）
+├── install.sh                    # 一键安装
+├── install.py                    # Hook 配置合并
 ├── toggle_traffic_light.sh       # Hook / 日志 开关脚本
 ├── test_all.sh                   # 手动测试脚本
 ├── light_menu.sh                 # 灯光菜单
 ├── 虹明机电USB串口报警灯通讯说明.pdf
-└── .venv/                        # 项目虚拟环境
+└── .venv/                        # 项目虚拟环境（安装后生成）
 ```
 
 ## 安装
 
-### 1. 创建虚拟环境
-
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install pyserial
+./install.sh
 ```
 
-### 2. 创建符号链接
+脚本自动完成：创建虚拟环境 → 安装 pyserial → 创建符号链接 → 合并 hook 到 `~/.claude/settings.json` → 创建运行时目录。
+
+> **如何合并 hook？** `install.py` 只管理 `traffic-light` 相关 hook，完全不动你已有的其他 hook 或配置。下次启动新的 Claude Code 会话时生效。
+
+如需预览将要写入的 hook 配置：
 
 ```bash
-mkdir -p ~/.claude/scripts
-ln -sf "$(pwd)/traffic_light_hook.py" ~/.claude/scripts/traffic-light-hook
-```
-
-### 3. 配置 Claude Code hooks
-
-在 `~/.claude/settings.json` 中添加：
-
-```json
-"hooks": {
-  "SessionStart": [{"hooks": [{"type": "command", "command": ".venv/bin/python ~/.claude/scripts/traffic-light-hook SessionStart standby 5", "async": true}]}],
-  "UserPromptSubmit": [{"hooks": [{"type": "command", "command": ".venv/bin/python ~/.claude/scripts/traffic-light-hook UserPromptSubmit working 4", "async": true}]}],
-  "Stop": [{"hooks": [{"type": "command", "command": ".venv/bin/python ~/.claude/scripts/traffic-light-hook Stop standby 5", "async": true}]}],
-  "PermissionRequest": [{"hooks": [{"type": "command", "command": ".venv/bin/python ~/.claude/scripts/traffic-light-hook PermissionRequest need_user 2", "async": true}]}],
-  "Notification": [
-    {"matcher": "permission_prompt", "hooks": [{"type": "command", "command": ".venv/bin/python ~/.claude/scripts/traffic-light-hook Notification need_user 2", "async": true}]},
-    {"matcher": "idle_prompt", "hooks": [{"type": "command", "command": ".venv/bin/python ~/.claude/scripts/traffic-light-hook Notification waiting_user 3", "async": true}]}
-  ],
-  "Elicitation": [{"hooks": [{"type": "command", "command": ".venv/bin/python ~/.claude/scripts/traffic-light-hook Elicitation waiting_user 3", "async": true}]}],
-  "StopFailure": [{"hooks": [{"type": "command", "command": ".venv/bin/python ~/.claude/scripts/traffic-light-hook StopFailure error 1", "async": true}]}],
-  "SessionEnd": [{"hooks": [{"type": "command", "command": ".venv/bin/python ~/.claude/scripts/traffic-light-hook SessionEnd off 999", "async": true}]}]
-}
+.venv/bin/python install.py --dry-run
 ```
 
 ## 手动测试

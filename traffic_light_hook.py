@@ -281,11 +281,9 @@ def main():
     if event == "SessionStart":
         if glob.glob("/dev/tty.usbserial-*"):
             DISABLED_FILE.unlink(missing_ok=True)
-            _log(session_id, event, status, "auto-detect:enabled")
         else:
             DISABLED_FILE.parent.mkdir(parents=True, exist_ok=True)
             DISABLED_FILE.touch()
-            _log(session_id, event, status, "auto-detect:no_device,disabled")
 
     # 哨兵文件存在 → 已禁用，直接退出
     if DISABLED_FILE.exists():
@@ -295,7 +293,7 @@ def main():
 
     _ensure_dirs()
 
-    # ── flock ───────────────────────────────────────
+    # ── flock（带重试，避免多实例竞争时静默丢弃） ────
     lock_fd = None
     try:
         lock_fd = open(LOCK_FILE, "a+")
@@ -304,13 +302,16 @@ def main():
 
     acquired = False
     if lock_fd is not None:
-        try:
-            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            acquired = True
-        except (BlockingIOError, OSError):
-            acquired = False
+        for _attempt in range(3):
+            try:
+                fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except (BlockingIOError, OSError):
+                time.sleep(0.3)
 
     if not acquired:
+        _log(session_id, event, status, "flock_busy:skipped")
         if lock_fd:
             lock_fd.close()
         sys.exit(0)
@@ -318,19 +319,23 @@ def main():
     try:
         now = time.time()
 
-        # 1) 清理过期
+        # 0) 清理过期（在写本实例之前，确保不会读到过期数据）
         _cleanup_expired(now)
 
-        # 2) 本实例
+        # 1) 本实例
         if event == "SessionEnd":
             _delete_instance(session_id)
         else:
             _write_instance(session_id, status, priority, project)
 
-        # 3) 聚合（后触发者胜）
+        # 1.5) 日志：记录 SessionStart 的设备检测结果
+        if event == "SessionStart":
+            _log(session_id, event, status, "auto-detect:enabled")
+
+        # 2) 聚合（后触发者胜）
         best_status, best_priority = _aggregate(now)
 
-        # 4) Debounce: 本实例刚切到 standby，但之前是 working → 保持 working
+        # 3) Debounce: 本实例刚切到 standby，但之前是 working → 保持 working
         if best_status == "standby":
             prev = _read_current_state()
             if prev and prev.get("status") == "working":
@@ -340,16 +345,16 @@ def main():
                     best_status = "working"
                     best_priority = 4
 
-        # 5) 状态没变 → 跳过
+        # 4) 状态没变 → 跳过
         prev = _read_current_state()
         if prev and prev.get("status") == best_status:
             _log(session_id, event, status, "same")
             raise SystemExit(0)
 
-        # 6) 控制灯
+        # 5) 控制灯
         _apply_light(best_status)
 
-        # 7) 记录状态 + 日志
+        # 6) 记录状态 + 日志
         prev_status = prev.get("status", "off") if prev else "off"
         color, mode = STATE_MAP.get(best_status, ("?", "?"))
         _log(session_id, event, status, f"{prev_status}→{best_status}:{color}_{mode}")
