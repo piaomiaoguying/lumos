@@ -57,7 +57,7 @@ USB 串口报警灯通过 Claude Code hook 实时呈现运行状态，无需看�
 
 # 手动控制
 .venv/bin/python traffic_light_controller.py --color green --mode on
-.venv/bin/python traffic_light_controller.py --all-off
+.venv/bin/python traffic_light_controller.py --color all --mode off
 ```
 
 或使用 bash 脚本：
@@ -90,7 +90,7 @@ Hook 每次触发都会记录决策日志到 `~/.claude/state/traffic-light/hook
 
 字段：`时间` | `session_id[:8]` | `事件` | `传入状态` | `决策结果`
 
-日志**默认关闭**，排障时开启：
+日志**默认开启**，空间紧张时可禁用：
 
 ```bash
 ./toggle_traffic_light.sh log-on      # 启用日志
