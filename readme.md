@@ -10,16 +10,17 @@ USB 串口报警灯通过 Claude Code hook 实时呈现运行状态，无需看�
 
 | 灯 | 含义 | Claude Code 在做什么 | 触发条件 |
 |----|------|---------------------|----------|
-| 🟢 绿灯慢闪（亮1s 灭0.5s） | **working** | 正在执行工具 / 刚收到你的输入 | `UserPromptSubmit`、`PreToolUse`（用户批准权限后开始执行） |
+| 🟢 绿灯慢闪（亮1s 灭0.5s） | **working** | 正在执行工具 / 刚收到你的输入 / 已回答问题 | `UserPromptSubmit`、`PostToolUse`、`PreToolUse`（非 AskUserQuestion 的普通工具执行） |
 | 🔵 蓝灯常亮 | **standby** | 输出完了 / 空闲等待，不用管 | `Stop`、`PermissionDenied`（仅自动模式）、`SessionStart`（无其他实例运行时） |
-| 🟡 黄灯常亮 | **waiting_user** | MCP 服务器请求用户输入（如填表单），需要你回应 | `Elicitation`（仅 MCP 服务器触发；AskUserQuestion 走 PermissionRequest → 黄灯闪烁） |
-| 🟡 黄灯慢闪（亮1s 灭0.5s） | **need_user** | 弹出确认框等你批准，或 Claude 提问多选题等你选择 | `PermissionRequest`（权限弹窗 / AskUserQuestion） |
+| 🟡 黄灯常亮 | **waiting_user** | MCP 服务器请求用户输入（如填表单），需要你回应 | `Elicitation`（仅 MCP 服务器触发） |
+| 🟡 黄灯慢闪（亮1s 灭0.5s） | **need_user** | 弹出确认框等你批准，或 Claude 提问多选题等你选择 | `PermissionRequest`、`PreToolUse`+`AskUserQuestion`（hook 智能修正） |
 | 🔴 红灯慢闪（亮1s 灭0.5s） | **error** | API 报错（限流/认证失败等） | `StopFailure` |
 | ⚫ 全灭 | **off** | 无活跃会话 | `SessionEnd`（最后一个实例退出） |
 
 > **注意**：`SessionStart` 切蓝灯有条件——仅在没有其他实例正在运行（灯是灭的）时才亮蓝灯。如果已有会话在工作（绿灯闪烁）或等待用户（黄灯闪烁），新会话不会抢灯。
 > **注意**：`PermissionDenied` 仅在自动模式分类器拒绝工具时触发，灯切为蓝灯（standby），Claude 随后会解释原因或调整策略。手动在权限对话框中点 No 不会触发任何 hook 事件。
-> **注意**：`Elicitation` 仅 MCP 服务器在工具执行中请求用户输入时触发。`AskUserQuestion` 工具（Claude 主动提问多选题）走 `PermissionRequest` 通道，表现为黄灯闪烁（`need_user`）。
+> **注意**：`AskUserQuestion`（Claude 提问多选题）由 hook 通过读取 stdin 中的 `tool_name` 字段实现了智能映射：`PreToolUse`+`AskUserQuestion` → 黄灯闪烁（`need_user`），等待用户选择；用户选择后 `PostToolUse`+`AskUserQuestion` → 绿灯闪烁（`working`），模型处理回答。这确保了一问一答的完整灯色循环。
+> **注意**：`Elicitation` 仅 MCP 服务器在工具执行中请求用户输入时触发。`AskUserQuestion` 工具通过 `PreToolUse` 事件触发，由 hook 智能修正为 `need_user`（黄灯闪烁），而非走 `PermissionRequest` 通道。
 
 ## 状态转换
 
@@ -29,17 +30,23 @@ SessionStart（有其他实例）→ 保持当前灯色，不抢灯
 
 UserPromptSubmit ──────────→ 🟢 working (绿灯闪烁)
        │
-       ├── PreToolUse ──────→ 🟢 working (绿灯闪烁，用户批准后继续执行)
+       ├── PreToolUse (AskUserQuestion) ──→ 🟡 need_user (黄灯闪烁, Claude 提问等你选)
+       │   │
+       │   └── 用户选择 → PostToolUse (AskUserQuestion) → 🟢 working
+       │
+       ├── PreToolUse (其他工具) ──→ 🟢 working (绿灯闪烁, 执行工具)
+       │
+       ├── PostToolUse (普通工具) ──→ 🟢 working (绿灯闪烁, 继续处理)
        │
        ├── PermissionRequest
-       │   └──────────────────→ 🟡 need_user (黄灯闪烁，权限弹窗 / Claude 提问等待回应)
+       │   └──────────────────→ 🟡 need_user (黄灯闪烁，权限弹窗等待批准)
        │       │
-       │       ├── 用户点 Yes / 回答 → PreToolUse → 🟢 working
+       │       ├── 用户点 Yes → PreToolUse → 🟢 working
        │       └── 用户点 No  → (无 hook 事件，灯保持 need_user 直到实例退出或被新事件覆盖)
        │
        ├── Stop / PermissionDenied（仅自动模式）
        │   └──────────────────→ 🔵 standby (蓝灯常亮)
-       ├── Elicitation（仅 MCP 服务器） → 🟡 waiting_user (黄灯常亮，MCP 请求用户输入）
+       ├── Elicitation（仅 MCP 服务器） → 🟡 waiting_user (黄灯常亮, MCP 请求用户输入）
        ├── StopFailure ─────→ 🔴 error (红灯闪烁)
        └── SessionEnd（且无其他实例）→ ⚫ off (全灭)
 ```
@@ -141,6 +148,7 @@ traffic_light_hook.py <event> <status> <priority>
     ├─ 日志哨兵存在 → 跳过日志写入
     ├─ flock 全局锁 → 防多实例串口冲突
     ├─ 扫描 ~/.claude/state/traffic-light/instances/ → 多实例聚合
+    ├─ 智能状态修正（PreToolUse+AskUserQuestion→need_user，PostToolUse+AskUserQuestion→working）
     ├─ 聚合实例状态（后触发者胜，闪烁状态有锁保护，新会话不抢灯）
     ├─ SessionStart 有其他灯运行时抑制蓝灯，仅该灭时切蓝灯
     ├─ 状态切换时先全关再设新状态，避免颜色残留
