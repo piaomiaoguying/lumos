@@ -18,7 +18,7 @@ USB 串口报警灯通过 Claude Code hook 实时呈现运行状态，无需看�
 | ⚫ 全灭 | **off** | 无活跃会话 | `SessionEnd`（最后一个实例退出） |
 
 > **注意**：`SessionStart` 切蓝灯有条件——仅在没有其他实例正在运行（灯是灭的）时才亮蓝灯。如果已有会话在工作（绿灯闪烁）或等待用户（黄灯闪烁），新会话不会抢灯。
-> **注意**：`PermissionDenied` 仅在自动模式分类器拒绝工具时触发，灯切为蓝灯（standby），Claude 随后会解释原因或调整策略。手动在权限对话框中点 No 不会触发任何 hook 事件。
+> **注意**：`PermissionDenied` 仅在自动模式分类器拒绝工具时触发，灯切为蓝灯（standby），Claude 随后会解释原因或调整策略。手动在权限对话框中点 **No** 不会触发任何 hook 事件——后续灯色取决于模型的下一步行为：如果模型继续发起新的操作，`UserPromptSubmit` 等事件会把灯切回绿灯；但如果模型就此结束响应且不再触发任何事件，灯将一直保持黄闪，直到你手动杀死会话。
 > **注意**：`AskUserQuestion`（Claude 提问多选题）由 hook 通过读取 stdin 中的 `tool_name` 字段实现了智能映射：`PreToolUse`+`AskUserQuestion` → 黄灯闪烁（`need_user`），等待用户选择；用户选择后 `PostToolUse`+`AskUserQuestion` → 绿灯闪烁（`working`），模型处理回答。这确保了一问一答的完整灯色循环。
 > **注意**：`Elicitation` 仅 MCP 服务器在工具执行中请求用户输入时触发。`AskUserQuestion` 工具通过 `PreToolUse` 事件触发，由 hook 智能修正为 `need_user`（黄灯闪烁），而非走 `PermissionRequest` 通道。
 
@@ -42,7 +42,8 @@ UserPromptSubmit ──────────→ 🟢 working (绿灯闪烁)
        │   └──────────────────→ 🟡 need_user (黄灯闪烁，权限弹窗等待批准)
        │       │
        │       ├── 用户点 Yes → PreToolUse → 🟢 working
-       │       └── 用户点 No  → (无 hook 事件，灯保持 need_user 直到实例退出或被新事件覆盖)
+       │       └── 用户点 No  → 模型继续操作 → (后续事件切灯)
+       │                    → 模型就此结束 → (无 hook 事件，灯卡在黄闪，需手动杀会话)
        │
        ├── Stop / PermissionDenied（仅自动模式）
        │   └──────────────────→ 🔵 standby (蓝灯常亮)
