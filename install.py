@@ -79,19 +79,26 @@ def merge_settings(settings: dict) -> dict:
     合并策略：
       对每个 traffic-light 管理的事件：
         1. 确保该事件的数组存在
-        2. 从已有 group 中移除 traffic-light hook（但不删整个 group）
+        2. 从已有 group 中移除所有 traffic-light hook（一次性完成，避免
+           同一事件多个 matcher 时互相覆盖）
         3. 如果某个 group 的所有 hook 都被移除，删除该 group
-        4. 追加新的 traffic-light group（独立 group，不混入别人的 group）
+        4. 追加新的 traffic-light group（每个 matcher 一个独立 group）
       对不管理的事件：完全不动
       对 hooks 以外的字段（env、permissions 等）：完全不动
     """
     if "hooks" not in settings:
         settings["hooks"] = {}
 
+    # 按事件分组，避免同一个事件多个条目时互相覆盖
+    from collections import defaultdict
+    grouped: dict[str, list[tuple[str | None, str, int]]] = defaultdict(list)
     for event, matcher, status, priority in HOOK_DEFS:
+        grouped[event].append((matcher, status, priority))
+
+    for event, entries in grouped.items():
         existing_groups = settings["hooks"].get(event, [])
 
-        # 从已有的每个 group 中移除 traffic-light hook（细粒度操作）
+        # 一次性移除所有旧的 traffic-light hook（避免逐条处理互相覆盖）
         cleaned_groups = []
         for group in existing_groups:
             non_traffic = [h for h in group.get("hooks", []) if not is_traffic_light_hook(h)]
@@ -99,11 +106,10 @@ def merge_settings(settings: dict) -> dict:
                 new_group = dict(group)
                 new_group["hooks"] = non_traffic
                 cleaned_groups.append(new_group)
-            # 如果 non_traffic 为空，整个 group 就没有了，不保留
 
-        # 追加新的 traffic-light group（独立 group，不混入别人的 hooks 数组）
-        new_group = build_hook_group(event, matcher, status, priority)
-        cleaned_groups.append(new_group)
+        # 一次性追加该事件的所有新 group
+        for matcher, status, priority in entries:
+            cleaned_groups.append(build_hook_group(event, matcher, status, priority))
 
         settings["hooks"][event] = cleaned_groups
 
