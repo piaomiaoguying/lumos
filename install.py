@@ -32,9 +32,11 @@ HOOK_DEFS = [
     # (事件名, matcher, 状态, 优先级)
     ("SessionStart",     None,               "standby",     5),
     ("UserPromptSubmit", None,               "working",     4),
+    ("PreToolUse",       None,               "working",     4),
     ("Stop",             None,               "standby",     5),
     ("PermissionRequest",None,               "need_user",   2),
     ("Notification",     "permission_prompt", "need_user",  2),
+    ("PermissionDenied", None,               "waiting_user", 3),
     ("Notification",     "idle_prompt",       "waiting_user", 3),
     ("Elicitation",      None,               "waiting_user", 3),
     ("StopFailure",      None,               "error",       1),
