@@ -11,31 +11,35 @@ USB 串口报警灯通过 Claude Code hook 实时呈现运行状态，无需看�
 | 灯 | 含义 | Claude Code 在做什么 | 触发条件 |
 |----|------|---------------------|----------|
 | 🟢 绿灯慢闪（亮1s 灭0.5s） | **working** | 正在执行工具 / 刚收到你的输入 | `UserPromptSubmit`、`PreToolUse`（用户批准权限后开始执行） |
-| 🔵 蓝灯常亮 | **standby** | 输出完了 / 空闲等待，不用管 | `Stop`、`PermissionDenied`（仅自动模式） |
-| 🟡 黄灯常亮 | **waiting_user** | 主动问你问题，需要你回答 | `Elicitation` |
-| 🟡 黄灯慢闪（亮1s 灭0.5s） | **need_user** | 弹出确认框，等你批准 | `PermissionRequest` / `Notification(permission_prompt)` |
+| 🔵 蓝灯常亮 | **standby** | 输出完了 / 空闲等待，不用管 | `Stop`、`PermissionDenied`（仅自动模式）、`SessionStart`（无其他实例运行时） |
+| 🟡 黄灯常亮 | **waiting_user** | MCP 服务器请求用户输入（如填表单），需要你回应 | `Elicitation`（仅 MCP 服务器触发；AskUserQuestion 走 PermissionRequest → 黄灯闪烁） |
+| 🟡 黄灯慢闪（亮1s 灭0.5s） | **need_user** | 弹出确认框等你批准，或 Claude 提问多选题等你选择 | `PermissionRequest`（权限弹窗 / AskUserQuestion） |
 | 🔴 红灯慢闪（亮1s 灭0.5s） | **error** | API 报错（限流/认证失败等） | `StopFailure` |
 | ⚫ 全灭 | **off** | 无活跃会话 | `SessionEnd`（最后一个实例退出） |
 
+> **注意**：`SessionStart` 切蓝灯有条件——仅在没有其他实例正在运行（灯是灭的）时才亮蓝灯。如果已有会话在工作（绿灯闪烁）或等待用户（黄灯闪烁），新会话不会抢灯。
 > **注意**：`PermissionDenied` 仅在自动模式分类器拒绝工具时触发，灯切为蓝灯（standby），Claude 随后会解释原因或调整策略。手动在权限对话框中点 No 不会触发任何 hook 事件。
+> **注意**：`Elicitation` 仅 MCP 服务器在工具执行中请求用户输入时触发。`AskUserQuestion` 工具（Claude 主动提问多选题）走 `PermissionRequest` 通道，表现为黄灯闪烁（`need_user`）。
 
 ## 状态转换
 
 ```text
+SessionStart（无其他实例）→ 🔵 standby (蓝灯常亮)
+SessionStart（有其他实例）→ 保持当前灯色，不抢灯
+
 UserPromptSubmit ──────────→ 🟢 working (绿灯闪烁)
        │
        ├── PreToolUse ──────→ 🟢 working (绿灯闪烁，用户批准后继续执行)
        │
-       ├── PermissionRequest / Notification(permission_prompt)
-       │   └──────────────────→ 🟡 need_user (黄灯闪烁，等待批准)
+       ├── PermissionRequest
+       │   └──────────────────→ 🟡 need_user (黄灯闪烁，权限弹窗 / Claude 提问等待回应)
        │       │
-       │       ├── 用户点 Yes → PreToolUse → 🟢 working
+       │       ├── 用户点 Yes / 回答 → PreToolUse → 🟢 working
        │       └── 用户点 No  → (无 hook 事件，灯保持 need_user 直到实例退出或被新事件覆盖)
        │
-       ├── Stop ────────────→ 🔵 standby (蓝灯常亮)
-       │
-       ├── Elicitation ─────→ 🟡 waiting_user (黄灯常亮)
-       ├── PermissionDenied（仅自动模式）→ 🔵 standby (蓝灯常亮)
+       ├── Stop / PermissionDenied（仅自动模式）
+       │   └──────────────────→ 🔵 standby (蓝灯常亮)
+       ├── Elicitation（仅 MCP 服务器） → 🟡 waiting_user (黄灯常亮，MCP 请求用户输入）
        ├── StopFailure ─────→ 🔴 error (红灯闪烁)
        └── SessionEnd（且无其他实例）→ ⚫ off (全灭)
 ```
@@ -137,7 +141,8 @@ traffic_light_hook.py <event> <status> <priority>
     ├─ 日志哨兵存在 → 跳过日志写入
     ├─ flock 全局锁 → 防多实例串口冲突
     ├─ 扫描 ~/.claude/state/traffic-light/instances/ → 多实例聚合
-    ├─ 聚合实例状态（后触发者胜，闪烁状态有锁保护）
+    ├─ 聚合实例状态（后触发者胜，闪烁状态有锁保护，新会话不抢灯）
+    ├─ SessionStart 有其他灯运行时抑制蓝灯，仅该灭时切蓝灯
     ├─ 状态切换时先全关再设新状态，避免颜色残留
     ├─ 常亮/灭 → 直接串口命令
     └─ 闪烁   → 启动软件呼吸灯进程（亮1s灭0.5s）

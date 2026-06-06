@@ -107,20 +107,44 @@ def _ensure_dirs():
     INSTANCES_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def _get_session_id() -> str:
+# stdin 解析结果缓存——sys.stdin 只能读一次，解析后缓存供后续使用
+_stdin_cache: tuple[str, str] | None = None
+
+
+def _parse_stdin() -> tuple[str, str]:
+    """从 stdin 解析 session_id 和 tool_name。只读一次，结果缓存。
+
+    Claude Code 将 hook 事件数据以 JSON 格式写入 stdin。
+    返回 (session_id, tool_name)，tool_name 可能为空字符串。
+    """
+    global _stdin_cache
+    if _stdin_cache is not None:
+        return _stdin_cache
+    tool_name = ""
     try:
         raw = sys.stdin.read()
         if raw and raw.strip():
             data = json.loads(raw)
             sid = data.get("session_id") or data.get("sessionId")
             if sid:
-                return str(sid)
+                session_id = str(sid)
+            else:
+                session_id = f"ppid{os.getppid()}-{int(time.time() * 1000)}"
+            tool_name = str(data.get("tool_name") or data.get("toolName") or "")
+        else:
+            session_id = f"ppid{os.getppid()}-{int(time.time() * 1000)}"
     except (json.JSONDecodeError, OSError):
-        pass
+        session_id = f"ppid{os.getppid()}-{int(time.time() * 1000)}"
     env_sid = os.environ.get("CLAUDE_SESSION_ID")
     if env_sid:
-        return env_sid
-    return f"ppid{os.getppid()}-{int(time.time() * 1000)}"
+        session_id = env_sid
+    _stdin_cache = (session_id, tool_name)
+    return _stdin_cache
+
+
+def _get_session_id() -> str:
+    sid, _ = _parse_stdin()
+    return sid
 
 
 def _cleanup_expired(now: float):
@@ -143,16 +167,27 @@ def _cleanup_expired(now: float):
 
 
 def _write_instance(session_id: str, status: str, priority: int, project: str):
-    (INSTANCES_DIR / f"{session_id}.json").write_text(
-        json.dumps({
-            "session_id": session_id,
-            "project": project,
-            "status": status,
-            "priority": priority,
-            "updated_at": time.time(),
-        }, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    """原子写入实例文件：先写临时文件，再 rename。
+
+    每个进程使用独立的 tmp 文件名（加 PID 和时间戳），完全消除
+    pre-flock 并发写的竞态窗口。两个进程同时 rename 同一个 target
+    是不可控的，但至少各自的 tmp 不会互相覆盖——rename 是原子的，
+    最终 target 一定是其中一个完整有效 JSON，不会是损坏文件。
+    """
+    target = INSTANCES_DIR / f"{session_id}.json"
+    tmp = INSTANCES_DIR / f".{session_id}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+    content = json.dumps({
+        "session_id": session_id,
+        "project": project,
+        "status": status,
+        "priority": priority,
+        "updated_at": time.time(),
+    }, ensure_ascii=False)
+    tmp.write_text(content, encoding="utf-8")
+    try:
+        tmp.replace(target)
+    except OSError:
+        tmp.unlink(missing_ok=True)
 
 
 def _delete_instance(session_id: str):
@@ -277,8 +312,22 @@ def main():
     status = sys.argv[2]
     priority = int(sys.argv[3])
 
-    # 提前获取 session_id，日志和 disabled 路径也需要
+    # 从 stdin 获取 session_id（需要先调用，后面 get_tool_name 依赖缓存）
     session_id = _get_session_id()
+
+    # ── 智能状态修正：根据 tool_name 覆盖 naive 状态 ──
+    # install.py 注册的 hook 没有 matcher（所有 PreToolUse 统一 = working），
+    # 这里根据 stdin 中的 tool_name 做精准修正：
+    #   - PreToolUse + AskUserQuestion → need_user（模型在提问，用户还没回答）
+    #   - PostToolUse   + AskUserQuestion → working（用户已经回答了，模型正在思考）
+    # 其他事件保持 install.py 注册的默认状态不变。
+    _, tool_name = _parse_stdin()
+    if event == "PreToolUse" and tool_name == "AskUserQuestion":
+        status = "need_user"
+        priority = 2
+    elif event == "PostToolUse" and tool_name == "AskUserQuestion":
+        status = "working"
+        priority = 4
 
     # SessionStart 时自动检测设备，刷新哨兵文件
     if event == "SessionStart":
@@ -295,6 +344,16 @@ def main():
     project = os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
 
     _ensure_dirs()
+
+    # ── 先写本实例文件（无需 flock，per-session 原子操作）────
+    # 必须在 flock 之前写：PreToolUse 和 PermissionRequest 可能并发，
+    # 抢锁输的一方也不能丢状态——实例文件已落盘，下一次聚合就能读到。
+    if event == "SessionEnd":
+        # SessionEnd 必须在 flock 内处理：如果先删了文件，中间别的
+        # hook 聚合就会误以为无实例，切灯 off。
+        pass
+    else:
+        _write_instance(session_id, status, priority, project)
 
     # ── flock（带重试，避免多实例竞争时静默丢弃） ────
     lock_fd = None
@@ -322,23 +381,38 @@ def main():
     try:
         now = time.time()
 
-        # 0) 清理过期（在写本实例之前，确保不会读到过期数据）
+        # 0) 清理过期（在聚合之前，确保不会读到过期数据）
         _cleanup_expired(now)
 
-        # 1) 本实例
-        if event == "SessionEnd":
-            _delete_instance(session_id)
-        else:
+        # 1) 聚合（本实例文件已在 flock 前写入，直接聚合即可）
+        best_status, best_priority, aggregated_session_id = _aggregate()
+
+        # 1.1) 竞态修复：pre-flock 写可能被并发 hook 覆盖。
+        # （PreToolUse working 覆盖了 PermissionRequest need_user）。
+        # 若聚合结果不是本事件的 status，说明本事件的写入被覆盖了——
+        # 重新写入并再次聚合，确保本事件的状态落盘。
+        if best_status != status:
             _write_instance(session_id, status, priority, project)
+            best_status, best_priority, aggregated_session_id = _aggregate()
 
         # 1.5) 日志：记录 SessionStart 的设备检测结果
         if event == "SessionStart":
             _log(session_id, event, status, "auto-detect:enabled")
 
-        # 2) 聚合（后触发者胜）
-        best_status, best_priority, aggregated_session_id = _aggregate()
+        # 2.5) SessionStart 蓝灯抑制：有其他灯正在运行时，不切到蓝灯
+        # 只有之前聚合状态是 off，新会话的 standby 才允许切蓝灯
+        if event == "SessionStart" and best_status == "standby":
+            # 不含本实例重新聚合，判断是否真的"之前灯是灭的"
+            _delete_instance(session_id)
+            prev_status_only, prev_priority, prev_session_id = _aggregate()
+            _write_instance(session_id, status, priority, project)
+            if prev_status_only != "off":
+                _log(session_id, event, status, f"standby-restraint:kept_{prev_status_only}")
+                best_status = prev_status_only
+                best_priority = prev_priority
+                aggregated_session_id = prev_session_id
 
-        # 2.5) 闪烁锁：闪烁状态一旦确立，只能被同一实例、更高优先级闪烁、或已死实例覆盖
+        # 2.6) 闪烁锁：闪烁状态一旦确立，只能被同一实例、更高优先级闪烁、或已死实例覆盖
         prev = _read_current_state()
         if prev and prev.get("status") in BLINK_STATES:
             owner_id = prev.get("owner_session_id", "")
@@ -367,8 +441,15 @@ def main():
                     best_priority = 4
 
         # 4) 状态没变 → 跳过
-        prev = _read_current_state()
-        if prev and prev.get("status") == best_status:
+        # 注意：必须用 CURRENT_STATE_FILE 做对比，而不是用 prev 变量的值，
+        # 因为 prev 可能已在 debounce/闪烁锁 中被覆盖为当前已生效的状态。
+        # 若用 prev（旧值）来对比，当 need_user 比 working 先抢到锁时：
+        #   - need_user 先执行：_apply_light 切黄灯闪烁，写 current_state = need_user
+        #   - working 后拿到锁，prev 从头读 current_state = need_user，但 best_status = working,
+        #     prev != best_status → 放行 → 日志 "need_user→working" → 切绿灯
+        # 这恰好是正确的！need_user 闪了，然后 working 切回绿灯。
+        prev_check = _read_current_state()
+        if prev_check and prev_check.get("status") == best_status:
             _log(session_id, event, status, "same")
             raise SystemExit(0)
 
