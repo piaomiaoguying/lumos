@@ -370,7 +370,7 @@ def main():
                 acquired = True
                 break
             except (BlockingIOError, OSError):
-                time.sleep(0.3)
+                time.sleep(0.5)
 
     if not acquired:
         _log(session_id, event, status, "flock_busy:skipped")
