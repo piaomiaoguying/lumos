@@ -166,6 +166,45 @@ def _cleanup_expired(now: float):
         pass
 
 
+def _is_pid_alive(pid: int) -> bool:
+    """进程是否存活。信号 0 不实际发信号，只做存在性检查。"""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True   # 进程存在但无权限信号
+    except OSError:
+        return False
+    return True
+
+
+def _cleanup_dead_owners():
+    """删除 owner Claude 进程已死的实例文件。
+
+    Ctrl+C 强退 Claude 不触发 SessionEnd，error/need_user 等闪烁锁状态
+    会成为孤儿：blinker 进程脱离进程树继续闪，闪烁锁又挡住新会话的状态切换。
+    这里靠实例文件里的 claude_pid 判断 owner 是否还活着，死了就删——
+    配合下面闪烁锁的"锁主已死放行"分支实现自愈：新状态应用时会 _kill_blinker
+    杀掉孤儿 blinker。
+    """
+    try:
+        for path in INSTANCES_DIR.iterdir():
+            if not path.suffix == ".json":
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            pid = data.get("claude_pid")
+            if not pid:
+                continue
+            if not _is_pid_alive(int(pid)):
+                path.unlink(missing_ok=True)
+    except FileNotFoundError:
+        pass
+
+
 def _write_instance(session_id: str, status: str, priority: int, project: str):
     """原子写入实例文件：先写临时文件，再 rename。
 
@@ -176,12 +215,15 @@ def _write_instance(session_id: str, status: str, priority: int, project: str):
     """
     target = INSTANCES_DIR / f"{session_id}.json"
     tmp = INSTANCES_DIR / f".{session_id}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+    # 记录 owner Claude 进程的 PID（hook 的父进程），用于自愈清理：
+    # Ctrl+C 强退 Claude 不触发 SessionEnd，靠 PID 存活检测回收孤儿实例。
     content = json.dumps({
         "session_id": session_id,
         "project": project,
         "status": status,
         "priority": priority,
         "updated_at": time.time(),
+        "claude_pid": os.getppid(),
     }, ensure_ascii=False)
     tmp.write_text(content, encoding="utf-8")
     try:
@@ -383,6 +425,8 @@ def main():
 
         # 0) 清理过期（在聚合之前，确保不会读到过期数据）
         _cleanup_expired(now)
+        # 0.5) 回收 owner 已死的孤儿实例（Ctrl+C 强退自愈）
+        _cleanup_dead_owners()
 
         # 1) 聚合（本实例文件已在 flock 前写入，直接聚合即可）
         best_status, best_priority, aggregated_session_id = _aggregate()
@@ -428,7 +472,7 @@ def main():
                     best_status = prev["status"]
                     best_priority = prev["priority"]
                     aggregated_session_id = owner_id  # 保持原所有者不变
-            # else: 锁主已死（SessionEnd 删了文件）→ 放行
+            # else: 锁主已死（SessionEnd 或 _cleanup_dead_owners 删了文件）→ 放行
 
         # 3) Debounce: 本实例刚切到 standby，但之前是 working → 保持 working
         if best_status == "standby":
