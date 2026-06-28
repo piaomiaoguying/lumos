@@ -55,7 +55,8 @@ traffic_light_hook.py  ← 纯 hook 驱动，无常驻进程
     │
     ├─ SessionStart → 自动检测设备
     ├─ 多实例聚合引擎 → 后触发者胜
-    ├─ 闪烁锁 → need_user/error 不受低优先级干扰
+    ├─ 闪烁锁 → need_user/error 不受低优先级干扰，但用户主动输入（UserPromptSubmit）可无条件覆盖
+    ├─ StopFailure 去重 → 同一 session 连续 StopFailure 5 秒冷却，防止故障风暴反复切换
     ├─ flock 全局锁 → 防串口冲突
     └─ USB 串口 → 物理灯
 ```
